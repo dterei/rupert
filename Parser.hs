@@ -18,11 +18,14 @@ SOFTWARE.
 module Parser where
 
 import Control.Applicative((<*))
+import System.Environment
 import Text.Parsec
 import Text.Parsec.String
 import Text.Parsec.Expr
 import Text.Parsec.Token
 import Text.Parsec.Language
+import Text.ParserCombinators.Parsec.IndentParser as P
+import qualified Text.ParserCombinators.Parsec.IndentParser.Token as IT
 
 data Expr = Var String
           | Val Integer
@@ -39,39 +42,16 @@ def = emptyDef{ opStart = oneOf "+*"
               , reservedOpNames = ["+", "*"]
               }
 tokenParser = makeTokenParser def
-TokenParser{ identifier = m_identifier
-           , reserved = m_reserved
-           , operator = m_operator
-           , reservedOp = m_reservedOp
-           , charLiteral = m_charLiteral
-           , stringLiteral = m_stringLiteral
-           , natural = m_natural
-           , integer = m_integer
-           , float = m_float
-           , naturalOrFloat = m_naturalOrFloat
-           , decimal = m_decimalNoWs
-           , hexadecimal = m_hexadecimal
-           , octal = m_octal
-           , symbol = m_symbol
-           , lexeme = m_lexeme
-           , whiteSpace = m_whiteSpace
-           , parens = m_parens
-           , braces = m_braces
-           , angles = m_angles
-           , brackets = m_brackets
-           , semi = m_semi
-           , comma = m_comma
-           , colon = m_colon
-           , dot = m_dot
-           , semiSep = m_semiSep
-           , semiSep1 = m_semiSep1
-           , commaSep = m_commaSep
-           , commaSep1 = m_commaSep1
-           } = tokenParser
 -- decimal doesn't eat whitespace, but natural does?
-m_decimal = m_decimalNoWs <* m_whiteSpace
+m_decimal = m_lexeme (IT.decimal tokenParser)
+m_identifier = IT.identifier tokenParser
+m_lexeme = IT.lexeme tokenParser
+m_parens = IT.parens tokenParser
+m_reservedOp = IT.reservedOp tokenParser
+m_semiSep = IT.semiSep tokenParser
+m_semiOrNewLineSep = IT.semiOrNewLineSep tokenParser
+m_whiteSpace = IT.whiteSpace tokenParser
 
-exprparser :: Parser Expr
 exprparser = buildExpressionParser table term
 table = [ [Infix (m_reservedOp "*" >> return Mult) AssocLeft]
         , [Infix (m_reservedOp "+" >> return Add) AssocLeft]
@@ -81,12 +61,20 @@ term = m_parens exprparser
        <|> fmap Var m_identifier
 
 mainparser = m_whiteSpace >> stmtparser <* eof
-  where stmtparser = fmap Seq (m_semiSep stmt1)
+  where stmtparser = fmap Seq (m_semiOrNewLineSep stmt1)
         stmt1 = do v <- m_identifier
                    m_reservedOp "="
                    e <- exprparser
                    return (Assign v e)
 
-p input = case parse mainparser "" input of
+p input = case P.parse mainparser "" input of
            Left error -> print error
            Right ans -> print ans
+
+q inputPath = do input <- readFile inputPath
+                 case P.parse mainparser inputPath input of
+                   Left error -> print error
+                   Right ans -> print ans
+
+main = do argv <- System.Environment.getArgs
+          q (head argv)
