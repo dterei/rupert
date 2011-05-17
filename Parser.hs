@@ -14,8 +14,13 @@ ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 SOFTWARE.
 -}
 
-
-module Parser where
+module Parser (
+      Expr(..)
+    , Stmt(..)
+    , stmtToStr
+    , exprToStr
+    , parseRupert
+    ) where
 
 import Control.Applicative((<*))
 import System.Environment
@@ -34,11 +39,22 @@ data Expr = Var String
     deriving (Show)
 
 data Stmt = Assign String Expr
+          | Return Expr
           | Seq [Stmt]
     deriving (Show)
 
+exprToStr (Var name) = name
+exprToStr (Val v) = show v
+exprToStr (Add e1 e2) = "(" ++ (exprToStr e1) ++ " + " ++ (exprToStr e2) ++ ")"
+exprToStr (Mult e1 e2) = "(" ++ (exprToStr e1) ++ " * " ++ (exprToStr e2) ++ ")"
+
+stmtToStr (Assign name e) = name ++ " = " ++ (exprToStr e) ++ "\n"
+stmtToStr (Return e) = "return " ++ (exprToStr e) ++ "\n"
+stmtToStr (Seq stmts) = concat $ map stmtToStr stmts
+
 def = emptyDef{ opStart = oneOf "+*"
               , opLetter = oneOf "+*"
+              , reservedNames = ["return"]
               , reservedOpNames = ["+", "*"]
               }
 tokenParser = makeTokenParser def
@@ -47,6 +63,7 @@ m_decimal = m_lexeme (IT.decimal tokenParser)
 m_identifier = IT.identifier tokenParser
 m_lexeme = IT.lexeme tokenParser
 m_parens = IT.parens tokenParser
+m_reserved = IT.reserved tokenParser
 m_reservedOp = IT.reservedOp tokenParser
 m_semiSep = IT.semiSep tokenParser
 m_semiOrNewLineSep = IT.semiOrNewLineSep tokenParser
@@ -62,10 +79,13 @@ term = m_parens exprparser
 
 mainparser = m_whiteSpace >> stmtparser <* eof
   where stmtparser = fmap Seq (m_semiOrNewLineSep stmt1)
-        stmt1 = do v <- m_identifier
-                   m_reservedOp "="
-                   e <- exprparser
-                   return (Assign v e)
+        stmt1 =    do v <- m_identifier
+                      m_reservedOp "="
+                      e <- exprparser
+                      return (Assign v e)
+               <|> do m_reserved "return"
+                      p <- exprparser
+                      return (Return p)
 
 p input = case P.parse mainparser "" input of
            Left error -> print error
@@ -75,6 +95,10 @@ q inputPath = do input <- readFile inputPath
                  case P.parse mainparser inputPath input of
                    Left error -> print error
                    Right ans -> print ans
+
+parseRupert :: String -> IO (Either ParseError Stmt)
+parseRupert inputPath = do input <- readFile inputPath
+                           return (P.parse mainparser inputPath input)
 
 main = do argv <- System.Environment.getArgs
           q (head argv)
