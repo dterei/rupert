@@ -37,32 +37,36 @@ data Expr = Var String
           | Val Integer
           | Add Expr Expr
           | Mult Expr Expr
+          | Fun [String] Stmt
     deriving (Show)
 
 data Stmt = Assign String Expr
           | Return Expr
-          | Fun [String] Stmt
           | Seq [Stmt]
     deriving (Show)
 
-exprToStr (Var name) = name
-exprToStr (Val v) = show v
-exprToStr (Add e1 e2) = "(" ++ (exprToStr e1) ++ " + " ++ (exprToStr e2) ++ ")"
-exprToStr (Mult e1 e2) = "(" ++ (exprToStr e1) ++ " * " ++ (exprToStr e2) ++ ")"
+exprToStr i (Var name) = name
+exprToStr i (Val v) = show v
+exprToStr i (Add e1 e2) =
+    "(" ++ (exprToStr i e1) ++ " + " ++ (exprToStr i e2) ++ ")"
+exprToStr i (Mult e1 e2) =
+    "(" ++ (exprToStr i e1) ++ " * " ++ (exprToStr i e2) ++ ")"
+exprToStr i (Fun args s) =
+    let spaceBeforeArgs = map (\a -> ' ':a) args
+        commaSepArgs = concat $ intersperse "," spaceBeforeArgs
+    in "fun" ++ commaSepArgs ++ ":\n" ++
+       (stmtToStr' (i + 1) s)
 
-stmtToStr s = stmtToStr' 0 s where
-  stmtToStr' i (Assign name e) =
-      indent i ++ name ++ " = " ++ (exprToStr e) ++ "\n"
-  stmtToStr' i (Return e) =
-      indent i ++ "return " ++ (exprToStr e) ++ "\n"
-  stmtToStr' i (Fun args s) =
-      let spaceBeforeArgs = map (\a -> ' ':a) args
-          commaSepArgs = concat $ intersperse "," spaceBeforeArgs
-      in indent i ++ "fun" ++ commaSepArgs ++ ":\n" ++
-         (stmtToStr' (i + 1) s)
-  stmtToStr' i (Seq stmts) =
-      concat $ map (stmtToStr' i) stmts
-  indent i = replicate (i * 4) ' '
+stmtToStr s = stmtToStr' 0 s
+stmtToStr' i (Assign name e@(Fun _ _)) =
+    indent i ++ name ++ " = " ++ (exprToStr i e)
+stmtToStr' i (Assign name e) =
+    indent i ++ name ++ " = " ++ (exprToStr i e) ++ "\n"
+stmtToStr' i (Return e) =
+    indent i ++ "return " ++ (exprToStr i e) ++ "\n"
+stmtToStr' i (Seq stmts) =
+    concat $ map (stmtToStr' i) stmts
+indent i = replicate (i * 4) ' '
 
 
 def = emptyDef{ opStart = oneOf "+*"
@@ -83,7 +87,12 @@ m_semiSep = IT.semiSep tokenParser
 m_semiOrNewLineSep = IT.semiOrNewLineSep tokenParser
 m_whiteSpace = IT.whiteSpace tokenParser
 
-exprparser = buildExpressionParser table term
+exprparser =     buildExpressionParser table term
+             <|> do m_reserved "fun"
+                    args <- m_commaSep m_identifier
+                    m_reservedOp ":"
+                    s <- P.block stmtparser
+                    return (Fun args s)
 table = [ [Infix (m_reservedOp "*" >> return Mult) AssocLeft]
         , [Infix (m_reservedOp "+" >> return Add) AssocLeft]
         ]
@@ -92,19 +101,14 @@ term = m_parens exprparser
        <|> fmap Var m_identifier
 
 mainparser = m_whiteSpace >> stmtparser <* eof
-  where stmtparser = fmap Seq (m_semiOrNewLineSep stmt1)
-        stmt1 =    do v <- m_identifier
-                      m_reservedOp "="
-                      e <- exprparser
-                      return (Assign v e)
-               <|> do m_reserved "return"
-                      p <- exprparser
-                      return (Return p)
-               <|> do m_reserved "fun"
-                      args <- m_commaSep m_identifier
-                      m_reservedOp ":"
-                      s <- P.block stmtparser
-                      return (Fun args s)
+stmtparser = fmap Seq (m_semiOrNewLineSep stmt1)
+    where stmt1 =    do v <- m_identifier
+                        m_reservedOp "="
+                        e <- exprparser
+                        return (Assign v e)
+                 <|> do m_reserved "return"
+                        p <- exprparser
+                        return (Return p)
 
 p input = case P.parse mainparser "" input of
            Left error -> print error

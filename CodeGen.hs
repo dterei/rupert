@@ -58,23 +58,26 @@ genFunBody (Assign name e) = do
     return ()
 
 -- generate a function that takes no arguments
-genFun0 :: [String] -> Stmt -> CodeGenModule (Function (IO Int32))
-genFun0 ([]) ast =
-    createFunction ExternalLinkage $
+genFun0 :: String -> [String] -> Stmt ->
+           CodeGenModule (Function (IO Int32))
+genFun0 name ([]) ast =
+    createNamedFunction ExternalLinkage name $
         let initState = Map.fromList []
         in State.evalStateT (genFunBody ast) initState
 
 -- generate a function that takes one argument
-genFun1 :: [String] -> Stmt -> CodeGenModule (Function (Int32 -> IO Int32))
-genFun1 ([arg1]) ast =
-    createFunction ExternalLinkage $ \i1 ->
+genFun1 :: String -> [String] -> Stmt ->
+           CodeGenModule (Function (Int32 -> IO Int32))
+genFun1 name ([arg1]) ast =
+    createNamedFunction ExternalLinkage name $ \i1 ->
        let initState = Map.fromList [(arg1, i1)]
        in State.evalStateT (genFunBody ast) initState
 
 -- generate a function that takes two arguments
-genFun2 :: [String] -> Stmt -> CodeGenModule (Function (Int32 -> Int32 -> IO Int32))
-genFun2 ([arg1, arg2]) ast =
-    createFunction ExternalLinkage $ \i1 i2 ->
+genFun2 :: String -> [String] -> Stmt ->
+           CodeGenModule (Function (Int32 -> Int32 -> IO Int32))
+genFun2 name ([arg1, arg2]) ast =
+    createNamedFunction ExternalLinkage name $ \i1 i2 ->
        let initState = Map.fromList [(arg1, i1), (arg2, i2)]
        in State.evalStateT (genFunBody ast) initState
 
@@ -82,12 +85,12 @@ genFun2 ([arg1, arg2]) ast =
 genModule :: Stmt -> CodeGenModule ()
 genModule (Seq stmts) =
     sequence_ $ map genModule stmts
-genModule (Fun args@[] stmt) =
-    genFun0 args stmt >> return ()
-genModule (Fun args@[a1] stmt) =
-    genFun1 args stmt >> return ()
-genModule (Fun args@[a1,a2] stmt) =
-    genFun2 args stmt >> return ()
+genModule (Assign name (Fun args@[] stmt)) =
+    genFun0 name args stmt >> return ()
+genModule (Assign name (Fun args@[a1] stmt)) =
+    genFun1 name args stmt >> return ()
+genModule (Assign name (Fun args@[a1,a2] stmt)) =
+    genFun2 name args stmt >> return ()
 
 -- write the bytecode for the given ast to a file
 gen :: Stmt -> String -> IO ()
