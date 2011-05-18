@@ -23,6 +23,7 @@ module Parser (
     ) where
 
 import Control.Applicative((<*))
+import Data.List
 import System.Environment
 import Text.Parsec
 import Text.Parsec.String
@@ -40,6 +41,7 @@ data Expr = Var String
 
 data Stmt = Assign String Expr
           | Return Expr
+          | Fun [String] Stmt
           | Seq [Stmt]
     deriving (Show)
 
@@ -48,16 +50,28 @@ exprToStr (Val v) = show v
 exprToStr (Add e1 e2) = "(" ++ (exprToStr e1) ++ " + " ++ (exprToStr e2) ++ ")"
 exprToStr (Mult e1 e2) = "(" ++ (exprToStr e1) ++ " * " ++ (exprToStr e2) ++ ")"
 
-stmtToStr (Assign name e) = name ++ " = " ++ (exprToStr e) ++ "\n"
-stmtToStr (Return e) = "return " ++ (exprToStr e) ++ "\n"
-stmtToStr (Seq stmts) = concat $ map stmtToStr stmts
+stmtToStr s = stmtToStr' 0 s where
+  stmtToStr' i (Assign name e) =
+      indent i ++ name ++ " = " ++ (exprToStr e) ++ "\n"
+  stmtToStr' i (Return e) =
+      indent i ++ "return " ++ (exprToStr e) ++ "\n"
+  stmtToStr' i (Fun args s) =
+      let spaceBeforeArgs = map (\a -> ' ':a) args
+          commaSepArgs = concat $ intersperse "," spaceBeforeArgs
+      in indent i ++ "fun" ++ commaSepArgs ++ ":\n" ++
+         (stmtToStr' (i + 1) s)
+  stmtToStr' i (Seq stmts) =
+      concat $ map (stmtToStr' i) stmts
+  indent i = replicate (i * 4) ' '
+
 
 def = emptyDef{ opStart = oneOf "+*"
               , opLetter = oneOf "+*"
-              , reservedNames = ["return"]
+              , reservedNames = ["fun", "return"]
               , reservedOpNames = ["+", "*"]
               }
 tokenParser = makeTokenParser def
+m_commaSep = IT.commaSep tokenParser
 -- decimal doesn't eat whitespace, but natural does?
 m_decimal = m_lexeme (IT.decimal tokenParser)
 m_identifier = IT.identifier tokenParser
@@ -86,6 +100,11 @@ mainparser = m_whiteSpace >> stmtparser <* eof
                <|> do m_reserved "return"
                       p <- exprparser
                       return (Return p)
+               <|> do m_reserved "fun"
+                      args <- m_commaSep m_identifier
+                      m_reservedOp ":"
+                      s <- P.block stmtparser
+                      return (Fun args s)
 
 p input = case P.parse mainparser "" input of
            Left error -> print error

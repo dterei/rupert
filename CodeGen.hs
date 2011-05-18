@@ -29,34 +29,69 @@ import Parser
 type Scope = Map.Map String (Value Int32)
 type MyState r a = State.StateT Scope (CodeGenFunction r) a
 
-expr2fun :: Expr -> MyState r (Value Int32)
-expr2fun (Var name) = do state <- State.get
-                         return $ state ! name
-expr2fun (Val v) = return (valueOf ((fromInteger v) :: Int32))
-expr2fun (Add e1 e2) = do a <- expr2fun e1
-                          b <- expr2fun e2
-                          lift $ add a b
-expr2fun (Mult e1 e2) = do a <- expr2fun e1
-                           b <- expr2fun e2
-                           lift $ mul a b
+-- generate the LLVM code to evaluate an expression
+genExpr :: Expr -> MyState r (Value Int32)
+genExpr (Var name) = do
+    state <- State.get
+    return $ state ! name
+genExpr (Val v) =
+    return $ valueOf ((fromInteger v) :: Int32)
+genExpr (Add e1 e2) = do
+    a <- genExpr e1
+    b <- genExpr e2
+    lift $ add a b
+genExpr (Mult e1 e2) = do
+    a <- genExpr e1
+    b <- genExpr e2
+    lift $ mul a b
 
-ast2fun :: Stmt -> MyState (Int32) ()
-ast2fun (Seq stmts) = sequence_ $ map ast2fun stmts
-ast2fun (Return e) = do fun <- expr2fun e
-                        lift $ ret fun
-ast2fun (Assign name e) = do state <- State.get
-                             fun <- expr2fun e
-                             let state' = Map.insert name fun state
-                             State.put state'
-                             return ()
+-- generate the LLVM code for a function body
+genFunBody :: Stmt -> MyState (Int32) ()
+genFunBody (Seq stmts) =
+    sequence_ $ map genFunBody stmts
+genFunBody (Return e) = do
+    fun <- genExpr e
+    lift $ ret fun
+genFunBody (Assign name e) = do
+    fun <- genExpr e
+    State.modify $ Map.insert name fun
+    return ()
 
-outerAst2fun :: Stmt -> CodeGenModule (Function (Int32 -> Int32 -> IO Int32))
-outerAst2fun ast = createFunction ExternalLinkage $ \i1 i2 ->
-                       let initState = Map.fromList [("i1", i1), ("i2", i2)]
-                       in State.evalStateT (ast2fun ast) initState
+-- generate a function that takes no arguments
+genFun0 :: [String] -> Stmt -> CodeGenModule (Function (IO Int32))
+genFun0 ([]) ast =
+    createFunction ExternalLinkage $
+        let initState = Map.fromList []
+        in State.evalStateT (genFunBody ast) initState
 
+-- generate a function that takes one argument
+genFun1 :: [String] -> Stmt -> CodeGenModule (Function (Int32 -> IO Int32))
+genFun1 ([arg1]) ast =
+    createFunction ExternalLinkage $ \i1 ->
+       let initState = Map.fromList [(arg1, i1)]
+       in State.evalStateT (genFunBody ast) initState
+
+-- generate a function that takes two arguments
+genFun2 :: [String] -> Stmt -> CodeGenModule (Function (Int32 -> Int32 -> IO Int32))
+genFun2 ([arg1, arg2]) ast =
+    createFunction ExternalLinkage $ \i1 i2 ->
+       let initState = Map.fromList [(arg1, i1), (arg2, i2)]
+       in State.evalStateT (genFunBody ast) initState
+
+-- generate the functions found at the top level of the file
+genModule :: Stmt -> CodeGenModule ()
+genModule (Seq stmts) =
+    sequence_ $ map genModule stmts
+genModule (Fun args@[] stmt) =
+    genFun0 args stmt >> return ()
+genModule (Fun args@[a1] stmt) =
+    genFun1 args stmt >> return ()
+genModule (Fun args@[a1,a2] stmt) =
+    genFun2 args stmt >> return ()
+
+-- write the bytecode for the given ast to a file
 gen :: Stmt -> String -> IO ()
 gen ast outputPath = do
   mod <- newModule
-  defineModule mod (outerAst2fun ast)
+  defineModule mod (genModule ast)
   writeBitcodeToFile outputPath mod
