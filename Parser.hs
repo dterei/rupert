@@ -69,7 +69,8 @@ stmtToStr' i (Seq stmts) =
 indent i = replicate (i * 4) ' '
 
 
-def = emptyDef{ opStart = oneOf "+*"
+def = emptyDef{ commentLine = "#"
+              , opStart = oneOf "+*"
               , opLetter = oneOf "+*"
               , reservedNames = ["fun", "return"]
               , reservedOpNames = ["+", "*"]
