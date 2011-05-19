@@ -26,14 +26,54 @@ import LLVM.ExecutionEngine
 
 import Parser
 
+-- name resolution works on a stack of scopes with globals at the bottom
+type Scopes = [Scope]
+
+-- a scope maps from names to values
 type Scope = Map.Map String (Value Int32)
-type MyState r a = State.StateT Scope (CodeGenFunction r) a
+
+-- lookup a name in a scope stack
+scopeLookup :: String -> Scopes -> Maybe (Value Int32)
+scopeLookup name (scope:rest) =
+    case Map.lookup name scope of
+        Just v -> Just v
+        Nothing -> scopeLookup name rest
+scopeLookup name [] = Nothing
+
+-- lookup a name in a scope stack, but throw an error if it's not found
+scopeGet :: String -> Scopes -> Value Int32
+scopeGet name scopes =
+    case scopeLookup name scopes of
+        Just v -> v
+        Nothing -> error $ "variable '" ++ name ++ "' not in scope"
+
+-- set a name in a scope stack
+-- If it exists, replace the old value. Otherwise, create a new one at the innermost scope.
+scopeSet :: String -> Value Int32 -> Scopes -> Scopes
+scopeSet name value scopes@(scope:rest) =
+    case scopeLookup name scopes of
+        Just _ -> scopeSet' name value scopes
+        Nothing -> (Map.insert name value scope):rest
+    where scopeSet' name value scopes@(scope:rest) =
+              case Map.lookup name scope of
+                Just _ -> (Map.insert name value scope):rest
+                Nothing -> scope:(scopeSet' name value rest)
+
+-- Push a new scope onto the stack
+scopePush :: Scopes -> Scopes
+scopePush scopes = Map.empty : scopes
+
+-- Pop a scope from the stack
+scopePop :: Scopes -> Scopes
+scopePop (scope:rest) = rest
+
+type MyState r a = State.StateT Scopes (CodeGenFunction r) a
 
 -- generate the LLVM code to evaluate an expression
 genExpr :: Expr -> MyState r (Value Int32)
 genExpr (Var name) = do
-    state <- State.get
-    return $ state ! name
+    scopes <- State.get
+    return $ scopeGet name scopes
 genExpr (Val v) =
     return $ valueOf ((fromInteger v) :: Int32)
 genExpr (Add e1 e2) = do
@@ -54,7 +94,7 @@ genFunBody (Return e) = do
     lift $ ret fun
 genFunBody (Assign name e) = do
     fun <- genExpr e
-    State.modify $ Map.insert name fun
+    State.modify $ scopeSet name fun
     return ()
 
 -- generate a function that takes no arguments
@@ -62,7 +102,7 @@ genFun0 :: String -> [String] -> Stmt ->
            CodeGenModule (Function (IO Int32))
 genFun0 name ([]) ast =
     createNamedFunction ExternalLinkage name $
-        let initState = Map.fromList []
+        let initState = [Map.fromList []]
         in State.evalStateT (genFunBody ast) initState
 
 -- generate a function that takes one argument
@@ -70,7 +110,7 @@ genFun1 :: String -> [String] -> Stmt ->
            CodeGenModule (Function (Int32 -> IO Int32))
 genFun1 name ([arg1]) ast =
     createNamedFunction ExternalLinkage name $ \i1 ->
-       let initState = Map.fromList [(arg1, i1)]
+       let initState = [Map.fromList [(arg1, i1)]]
        in State.evalStateT (genFunBody ast) initState
 
 -- generate a function that takes two arguments
@@ -78,7 +118,7 @@ genFun2 :: String -> [String] -> Stmt ->
            CodeGenModule (Function (Int32 -> Int32 -> IO Int32))
 genFun2 name ([arg1, arg2]) ast =
     createNamedFunction ExternalLinkage name $ \i1 i2 ->
-       let initState = Map.fromList [(arg1, i1), (arg2, i2)]
+       let initState = [Map.fromList [(arg1, i1), (arg2, i2)]]
        in State.evalStateT (genFunBody ast) initState
 
 -- generate the functions found at the top level of the file
