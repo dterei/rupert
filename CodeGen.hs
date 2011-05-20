@@ -116,6 +116,9 @@ genFunBody (Assign name e) = do
     fun <- genExpr e
     State.modify $ scopeSet name (RpInt32 fun)
     return ()
+genFunBody (JustExpr e@(Call _ _)) = do
+    fun <- genExpr e
+    return ()
 
 
 -- generate a function that takes no arguments

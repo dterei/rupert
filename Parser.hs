@@ -44,6 +44,7 @@ data Expr = Var String
 data Stmt = Assign String Expr
           | Return Expr
           | Seq [Stmt]
+          | JustExpr Expr -- for stand-alone function calls
     deriving (Show)
 
 exprToStr i (Var name) = name
@@ -69,6 +70,8 @@ stmtToStr' i (Assign name e) =
     indent i ++ name ++ " = " ++ (exprToStr i e) ++ "\n"
 stmtToStr' i (Return e) =
     indent i ++ "return " ++ (exprToStr i e) ++ "\n"
+stmtToStr' i (JustExpr e) =
+    indent i ++ (exprToStr i e) ++ "\n"
 stmtToStr' i (Seq stmts) =
     concat $ map (stmtToStr' i) stmts
 indent i = replicate (i * 4) ' '
@@ -111,13 +114,17 @@ term = m_parens exprparser
 
 mainparser = m_whiteSpace >> stmtparser <* eof
 stmtparser = fmap Seq (m_semiOrNewLineSep stmt1)
-    where stmt1 =    do v <- m_identifier
-                        m_reservedOp "="
+    where stmt1 =    -- look-ahead in case this is a function call
+                     do v <- try ( do { v <- m_identifier;
+                                        m_reservedOp "=";
+                                        return v } )
                         e <- exprparser
                         return (Assign v e)
                  <|> do m_reserved "return"
                         p <- exprparser
                         return (Return p)
+                 <|> do p <- exprparser
+                        return (JustExpr p)
 
 p input = case P.parse mainparser "" input of
            Left error -> print error
