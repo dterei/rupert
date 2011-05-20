@@ -38,6 +38,7 @@ data Expr = Var String
           | Add Expr Expr
           | Mult Expr Expr
           | Fun [String] Stmt
+          | Call String [Expr]
     deriving (Show)
 
 data Stmt = Assign String Expr
@@ -56,6 +57,10 @@ exprToStr i (Fun args s) =
         commaSepArgs = concat $ intersperse "," spaceBeforeArgs
     in "fun" ++ commaSepArgs ++ ":\n" ++
        (stmtToStr' (i + 1) s)
+exprToStr i (Call name args) =
+    let stringArgs = map (\a -> exprToStr i a) args
+        commaSepArgs = concat $ intersperse ", " stringArgs
+    in name ++ "(" ++ commaSepArgs ++ ")"
 
 stmtToStr s = stmtToStr' 0 s
 stmtToStr' i (Assign name e@(Fun _ _)) =
@@ -88,7 +93,10 @@ m_semiSep = IT.semiSep tokenParser
 m_semiOrNewLineSep = IT.semiOrNewLineSep tokenParser
 m_whiteSpace = IT.whiteSpace tokenParser
 
-exprparser =     buildExpressionParser table term
+exprparser =     do name <- m_identifier
+                    args <- m_parens $ m_commaSep exprparser
+                    return (Call name args)
+             <|> buildExpressionParser table term
              <|> do m_reserved "fun"
                     args <- m_commaSep m_identifier
                     m_reservedOp ":"

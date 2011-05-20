@@ -26,14 +26,19 @@ import LLVM.ExecutionEngine
 
 import Parser
 
+data RpValue = RpInt32 (Value Int32)
+             | RpFun0 (Function (IO Int32))
+             | RpFun1 (Function (Int32 -> IO Int32))
+             | RpFun2 (Function (Int32 -> Int32 -> IO Int32))
+
 -- name resolution works on a stack of scopes with globals at the bottom
 type Scopes = [Scope]
 
 -- a scope maps from names to values
-type Scope = Map.Map String (Value Int32)
+type Scope = Map.Map String RpValue
 
 -- lookup a name in a scope stack
-scopeLookup :: String -> Scopes -> Maybe (Value Int32)
+scopeLookup :: String -> Scopes -> Maybe RpValue
 scopeLookup name (scope:rest) =
     case Map.lookup name scope of
         Just v -> Just v
@@ -41,7 +46,7 @@ scopeLookup name (scope:rest) =
 scopeLookup name [] = Nothing
 
 -- lookup a name in a scope stack, but throw an error if it's not found
-scopeGet :: String -> Scopes -> Value Int32
+scopeGet :: String -> Scopes -> RpValue
 scopeGet name scopes =
     case scopeLookup name scopes of
         Just v -> v
@@ -49,7 +54,7 @@ scopeGet name scopes =
 
 -- set a name in a scope stack
 -- If it exists, replace the old value. Otherwise, create a new one at the innermost scope.
-scopeSet :: String -> Value Int32 -> Scopes -> Scopes
+scopeSet :: String -> RpValue -> Scopes -> Scopes
 scopeSet name value scopes@(scope:rest) =
     case scopeLookup name scopes of
         Just _ -> scopeSet' name value scopes
@@ -73,7 +78,9 @@ type MyState r a = State.StateT Scopes (CodeGenFunction r) a
 genExpr :: Expr -> MyState r (Value Int32)
 genExpr (Var name) = do
     scopes <- State.get
-    return $ scopeGet name scopes
+    case scopeGet name scopes of
+      RpInt32 v -> return v
+      _ -> error "Not the expected type"
 genExpr (Val v) =
     return $ valueOf ((fromInteger v) :: Int32)
 genExpr (Add e1 e2) = do
@@ -84,6 +91,19 @@ genExpr (Mult e1 e2) = do
     a <- genExpr e1
     b <- genExpr e2
     lift $ mul a b
+genExpr (Call name args) = do
+    scopes <- State.get
+    case scopeGet name scopes of
+      RpFun0 fun -> lift $ call fun
+      RpFun1 fun -> case args of
+        [expr1] -> do arg1 <- genExpr expr1
+                      lift $ call fun arg1
+      RpFun2 fun -> case args of
+        [expr1, expr2] -> do arg1 <- genExpr expr1
+                             arg2 <- genExpr expr2
+                             lift $ call fun arg1 arg2
+      _ -> error "Not the expected type"
+
 
 -- generate the LLVM code for a function body
 genFunBody :: Stmt -> MyState (Int32) ()
@@ -94,15 +114,17 @@ genFunBody (Return e) = do
     lift $ ret fun
 genFunBody (Assign name e) = do
     fun <- genExpr e
-    State.modify $ scopeSet name fun
+    State.modify $ scopeSet name (RpInt32 fun)
     return ()
+
 
 -- generate a function that takes no arguments
 genFun0 :: String -> [String] -> Stmt ->
            CodeGenModule (Function (IO Int32))
-genFun0 name ([]) ast =
+genFun0 name ([]) ast = do
+    putchar <- newNamedFunction ExternalLinkage "putchar" :: TFunction (Int32 -> IO Int32)
     createNamedFunction ExternalLinkage name $
-        let initState = [Map.fromList []]
+        let initState = [Map.fromList [("putchar", RpFun1 putchar)]]
         in State.evalStateT (genFunBody ast) initState
 
 -- generate a function that takes one argument
@@ -110,7 +132,7 @@ genFun1 :: String -> [String] -> Stmt ->
            CodeGenModule (Function (Int32 -> IO Int32))
 genFun1 name ([arg1]) ast =
     createNamedFunction ExternalLinkage name $ \i1 ->
-       let initState = [Map.fromList [(arg1, i1)]]
+       let initState = [Map.fromList [(arg1, RpInt32 i1)]]
        in State.evalStateT (genFunBody ast) initState
 
 -- generate a function that takes two arguments
@@ -118,7 +140,7 @@ genFun2 :: String -> [String] -> Stmt ->
            CodeGenModule (Function (Int32 -> Int32 -> IO Int32))
 genFun2 name ([arg1, arg2]) ast =
     createNamedFunction ExternalLinkage name $ \i1 i2 ->
-       let initState = [Map.fromList [(arg1, i1), (arg2, i2)]]
+       let initState = [Map.fromList [(arg1, RpInt32 i1), (arg2, RpInt32 i2)]]
        in State.evalStateT (genFunBody ast) initState
 
 -- generate the functions found at the top level of the file
