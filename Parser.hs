@@ -35,6 +35,7 @@ import qualified Text.ParserCombinators.Parsec.IndentParser.Token as IT
 
 data Expr = Var String
           | Val Integer
+          | StringVal String
           | Add Expr Expr
           | Mult Expr Expr
           | Fun [String] Stmt
@@ -49,6 +50,7 @@ data Stmt = Assign String Expr
 
 exprToStr i (Var name) = name
 exprToStr i (Val v) = show v
+exprToStr i (StringVal v) = show v
 exprToStr i (Add e1 e2) =
     "(" ++ (exprToStr i e1) ++ " + " ++ (exprToStr i e2) ++ ")"
 exprToStr i (Mult e1 e2) =
@@ -94,6 +96,7 @@ m_reserved = IT.reserved tokenParser
 m_reservedOp = IT.reservedOp tokenParser
 m_semiSep = IT.semiSep tokenParser
 m_semiOrNewLineSep = IT.semiOrNewLineSep tokenParser
+m_stringLiteral = IT.stringLiteral tokenParser
 m_whiteSpace = IT.whiteSpace tokenParser
 
 exprparser =     do name <- m_identifier
@@ -110,6 +113,7 @@ table = [ [Infix (m_reservedOp "*" >> return Mult) AssocLeft]
         ]
 term = m_parens exprparser
        <|> fmap Val m_decimal
+       <|> fmap StringVal m_stringLiteral
        <|> fmap Var m_identifier
 
 mainparser = m_whiteSpace >> stmtparser <* eof
