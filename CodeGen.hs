@@ -27,56 +27,9 @@ import LLVM.Core
 import LLVM.ExecutionEngine
 
 import Parser
+import Environment
 
-data RpValue = RpInt32 (Value Int32)
-             | forall n. (Nat n) => RpString (Global (Array n Word8))
-             | RpFun0 (Function (IO Int32))
-             | RpFun1 (Function (Int32 -> IO Int32))
-             | RpFun2 (Function (Int32 -> Int32 -> IO Int32))
-             | RpStrFun (Function (Ptr Word8 -> IO Int32))
-
--- name resolution works on a stack of scopes with globals at the bottom
-type Scopes = [Scope]
-
--- a scope maps from names to values
-type Scope = Map.Map String RpValue
-
--- lookup a name in a scope stack
-scopeLookup :: String -> Scopes -> Maybe RpValue
-scopeLookup name (scope:rest) =
-    case Map.lookup name scope of
-        Just v -> Just v
-        Nothing -> scopeLookup name rest
-scopeLookup name [] = Nothing
-
--- lookup a name in a scope stack, but throw an error if it's not found
-scopeGet :: String -> Scopes -> RpValue
-scopeGet name scopes =
-    case scopeLookup name scopes of
-        Just v -> v
-        Nothing -> error $ "variable '" ++ name ++ "' not in scope"
-
--- set a name in a scope stack
--- If it exists, replace the old value. Otherwise, create a new one at the innermost scope.
-scopeSet :: String -> RpValue -> Scopes -> Scopes
-scopeSet name value scopes@(scope:rest) =
-    case scopeLookup name scopes of
-        Just _ -> scopeSet' name value scopes
-        Nothing -> (Map.insert name value scope):rest
-    where scopeSet' name value scopes@(scope:rest) =
-              case Map.lookup name scope of
-                Just _ -> (Map.insert name value scope):rest
-                Nothing -> scope:(scopeSet' name value rest)
-
--- Push a new scope onto the stack
-scopePush :: Scopes -> Scopes
-scopePush scopes = Map.empty : scopes
-
--- Pop a scope from the stack
-scopePop :: Scopes -> Scopes
-scopePop (scope:rest) = rest
-
-type MyState r a = State.StateT Scopes (CodeGenFunction r) a
+type MyState r a = State.StateT Environment (CodeGenFunction r) a
 
 asInt32 :: RpValue -> Value Int32
 asInt32 (RpInt32 v) = v
@@ -87,13 +40,13 @@ getStringPtr (RpString v) = getElementPtr v (0::Word32, (0::Word32, ()))
 -- generate the LLVM code to evaluate an expression
 genExpr :: Expr -> MyState r RpValue
 genExpr (Var name) = do
-    scopes <- State.get
-    return $ scopeGet name scopes
+    env <- State.get
+    return $ envGetVar name env
 genExpr (Val v) =
     return $ RpInt32 $ valueOf ((fromInteger v) :: Int32)
 genExpr (StringVal v) = do
-    scopes <- State.get
-    return $ scopeGet v scopes
+    env <- State.get
+    return $ envGetString v env
 genExpr (Add e1 e2) = do
     a <- genExpr e1
     b <- genExpr e2
@@ -105,8 +58,8 @@ genExpr (Mult e1 e2) = do
     res <- lift $ mul (asInt32 a) (asInt32 b)
     return $ RpInt32 res
 genExpr (Call name args) = do
-    scopes <- State.get
-    case scopeGet name scopes of
+    env <- State.get
+    case envGetVar name env of
       RpFun0 fun -> do
         res <- lift $ call fun
         return $ RpInt32 res
@@ -136,7 +89,7 @@ genFunBody (Return e) = do
     lift $ ret (asInt32 fun)
 genFunBody (Assign name e) = do
     fun <- genExpr e
-    State.modify $ scopeSet name fun
+    State.modify $ envSetVar name fun
     return ()
 genFunBody (JustExpr e@(Call _ _)) = do
     fun <- genExpr e
@@ -144,28 +97,29 @@ genFunBody (JustExpr e@(Call _ _)) = do
 
 
 -- generate a function that takes no arguments
-genFun0 :: String -> [String] -> Stmt -> Scopes ->
+genFun0 :: String -> [String] -> Stmt -> Environment ->
            CodeGenModule (Function (IO Int32))
-genFun0 name ([]) ast scopes = do
+genFun0 name ([]) ast env = do
     createNamedFunction ExternalLinkage name $
-        State.evalStateT (genFunBody ast) scopes
+        State.evalStateT (genFunBody ast) env
 
 -- generate a function that takes one argument
-genFun1 :: String -> [String] -> Stmt -> Scopes ->
+genFun1 :: String -> [String] -> Stmt -> Environment ->
            CodeGenModule (Function (Int32 -> IO Int32))
-genFun1 name ([arg1]) ast scopes =
+genFun1 name ([arg1]) ast env =
     createNamedFunction ExternalLinkage name $ \i1 ->
-       let scopes'  = scopeSet arg1 (RpInt32 i1) scopes
-       in State.evalStateT (genFunBody ast) scopes'
+       let env' = envSetVar arg1 (RpInt32 i1) env
+       in State.evalStateT (genFunBody ast) env'
 
 -- generate a function that takes two arguments
-genFun2 :: String -> [String] -> Stmt -> Scopes ->
+genFun2 :: String -> [String] -> Stmt -> Environment ->
            CodeGenModule (Function (Int32 -> Int32 -> IO Int32))
-genFun2 name ([arg1, arg2]) ast scopes =
+genFun2 name ([arg1, arg2]) ast env =
     createNamedFunction ExternalLinkage name $ \i1 i2 ->
-       let scopes'  = scopeSet arg1 (RpInt32 i1) scopes
-           scopes'' = scopeSet arg2 (RpInt32 i2) scopes'
-       in State.evalStateT (genFunBody ast) scopes''
+       let env' = env -$
+                  envSetVar arg1 (RpInt32 i1) -$
+                  envSetVar arg2 (RpInt32 i2)
+       in State.evalStateT (genFunBody ast) env'
 
 -- Create an LLVM global from a string literal
 intern :: String -> CodeGenModule RpValue
@@ -178,21 +132,21 @@ genModule ast = do
   puts <- newNamedFunction ExternalLinkage "puts" :: TFunction (Ptr Word8 -> IO Int32)
   let strings = extractStrings ast
   cstrings <- sequence $ map intern strings
-  -- TODO: it's a botch to mix string literals in with variable names
-  let initScope = [Map.empty,
-                   Map.fromList [("putchar", RpFun1 putchar),
-                                 ("puts", RpStrFun puts)],
-                   Map.fromList $ zip strings cstrings]
+  let env = newEnv -$
+            addStringLiterals (zip strings cstrings) -$
+            envSetVar "putchar" (RpFun1 putchar) -$
+            envSetVar "puts" (RpStrFun puts) -$
+            envPushScope
   let genModule' ast =
         case ast of
           Seq stmts ->
               sequence_ $ map genModule' stmts
           Assign name (Fun args@[] stmt) ->
-              genFun0 name args stmt initScope >> return ()
+              genFun0 name args stmt env >> return ()
           Assign name (Fun args@[a1] stmt) ->
-              genFun1 name args stmt initScope >> return ()
+              genFun1 name args stmt env >> return ()
           Assign name (Fun args@[a1,a2] stmt) ->
-              genFun2 name args stmt initScope >> return ()
+              genFun2 name args stmt env >> return ()
   genModule' ast
 
 -- Extract the string literals from an AST
