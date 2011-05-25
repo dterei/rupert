@@ -95,28 +95,21 @@ genFunBody (JustExpr e@(Call _ _)) = do
     fun <- genExpr e
     return ()
 
-
--- generate a function that takes no arguments
-genFun0 :: String -> [String] -> Stmt -> Environment ->
-           CodeGenModule (Function (IO Int32))
-genFun0 name ([]) ast env = do
-    createNamedFunction ExternalLinkage name $
-        State.evalStateT (genFunBody ast) env
-
--- generate a function that takes one argument
-genFun1 :: String -> [String] -> Stmt -> Environment ->
-           CodeGenModule (Function (Int32 -> IO Int32))
-genFun1 name ([arg1]) ast env =
-    createNamedFunction ExternalLinkage name $ \i1 ->
-       let env' = envSetVar arg1 (RpInt32 i1) env
+-- generate code for a function:
+-- bind arguments for function parameters and defer to genFunBody
+genFun :: String -> [String] -> Stmt -> Environment -> CodeGenModule ()
+genFun name args ast env =
+  case envGetVar name env of
+    RpFun0 fun -> defineFunction fun $
+       State.evalStateT (genFunBody ast) env
+    RpFun1 fun -> defineFunction fun $ \i1 ->
+       let [arg1] = args
+           env' = env -$
+                  envSetVar arg1 (RpInt32 i1)
        in State.evalStateT (genFunBody ast) env'
-
--- generate a function that takes two arguments
-genFun2 :: String -> [String] -> Stmt -> Environment ->
-           CodeGenModule (Function (Int32 -> Int32 -> IO Int32))
-genFun2 name ([arg1, arg2]) ast env =
-    createNamedFunction ExternalLinkage name $ \i1 i2 ->
-       let env' = env -$
+    RpFun2 fun -> defineFunction fun $ \i1 i2 ->
+       let [arg1, arg2] = args
+           env' = env -$
                   envSetVar arg1 (RpInt32 i1) -$
                   envSetVar arg2 (RpInt32 i2)
        in State.evalStateT (genFunBody ast) env'
@@ -125,6 +118,17 @@ genFun2 name ([arg1, arg2]) ast env =
 intern :: String -> CodeGenModule RpValue
 intern string = withStringNul string $ \s -> return (RpString s)
 
+-- Create placeholder for a global function which will be later defined
+createFun :: Stmt -> CodeGenModule (String, RpValue)
+createFun (Assign name (Fun args _)) =
+  case length args of
+        0 -> do fun <- newNamedFunction ExternalLinkage name
+                return $ (name, RpFun0 fun)
+        1 -> do fun <- newNamedFunction ExternalLinkage name
+                return $ (name, RpFun1 fun)
+        2 -> do fun <- newNamedFunction ExternalLinkage name
+                return $ (name, RpFun2 fun)
+
 -- generate the functions found at the top level of the file
 genModule :: Stmt -> CodeGenModule ()
 genModule ast = do
@@ -132,21 +136,18 @@ genModule ast = do
   puts <- newNamedFunction ExternalLinkage "puts" :: TFunction (Ptr Word8 -> IO Int32)
   let strings = extractStrings ast
   cstrings <- sequence $ map intern strings
+  funs <- sequence $ map createFun (extractFuns ast)
   let env = newEnv -$
             addStringLiterals (zip strings cstrings) -$
             envSetVar "putchar" (RpFun1 putchar) -$
             envSetVar "puts" (RpStrFun puts) -$
+            envPushScope -$
+            envSetVars funs -$
             envPushScope
   let genModule' ast =
         case ast of
-          Seq stmts ->
-              sequence_ $ map genModule' stmts
-          Assign name (Fun args@[] stmt) ->
-              genFun0 name args stmt env >> return ()
-          Assign name (Fun args@[a1] stmt) ->
-              genFun1 name args stmt env >> return ()
-          Assign name (Fun args@[a1,a2] stmt) ->
-              genFun2 name args stmt env >> return ()
+          Seq stmts -> sequence_ $ map genModule' stmts
+          Assign name (Fun args stmt) -> genFun name args stmt env
   genModule' ast
 
 -- Extract the string literals from an AST
@@ -162,6 +163,14 @@ extractStrings stmt =
               Fun _ stmt       -> extractStrings stmt
               Call _ exprs     -> concat $ map eS exprs
               _                -> []
+
+-- Extract the top level functions from an AST
+extractFuns :: Stmt -> [Stmt]
+extractFuns stmt =
+    case stmt of
+        Seq stmts     -> concat $ map extractFuns stmts
+        Assign name e -> [stmt]
+        _             -> []
 
 -- write the bytecode for the given ast to a file
 gen :: Stmt -> String -> IO ()

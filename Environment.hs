@@ -25,6 +25,7 @@ module Environment(
   , envLookupVar
   , envGetVar
   , envSetVar
+  , envSetVars
   , envPushScope
   , envPopScope
   , (-$)
@@ -136,6 +137,13 @@ envSetVar name value env =
         Just _ -> scopeSet' name value scopes
         Nothing -> (Map.insert name value scope):rest
   in setScopes newScopes env
+
+-- set names in the environment, see envSetVar
+envSetVars :: [(String, RpValue)] -> Environment -> Environment
+envSetVars [] env = env
+envSetVars ((name, value):rest) env = env -$
+                                      envSetVar name value -$
+                                      envSetVars rest
 
 -- Push a new scope onto the stack
 envPushScope :: Environment -> Environment
